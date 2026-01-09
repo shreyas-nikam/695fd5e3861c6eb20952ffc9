@@ -790,7 +790,7 @@ def validate_production_settings(self) -> "Settings":
             settings = get_settings_with_prod_validation()
             st.session_state.prod_settings_valid = True
             st.session_state.prod_validation_error = None
-            st.success("✅ Production settings are VALID!")
+            st.success("✅ Settings are VALID!")
             st.markdown(f"**Loaded Settings:**")
             st.markdown(f"  APP_ENV: `{settings.APP_ENV}`")
             st.markdown(f"  DEBUG: `{settings.DEBUG}`")
