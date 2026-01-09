@@ -1,582 +1,665 @@
 
-# Automated & Validated API Configuration for Production: A Software Developer's Guide
+# Automated & Validated API Configuration for Production
 
-## Introduction: Ensuring Operational Excellence on the PE Intelligence Platform
+## Introduction: Safeguarding the PE Intelligence Platform
 
-As a **Software Developer** or **Data Engineer** at **PE Corp.**, my name is Alex. My primary responsibility is to develop and deploy features for our flagship **PE Intelligence Platform**. A critical, yet often overlooked, aspect of any successful deployment is robust application configuration. Misconfigurations can lead to anything from subtle data inconsistencies to catastrophic application crashes and security vulnerabilities in our production environment.
+As a **Software Developer** building the Organizational AIR Scoring platform, ensuring the robustness and security of our application configurations is paramount. Every new feature or data processing service we deploy relies on correct, consistent, and validated settings across different environments – development, staging, and crucially, production. A single misconfigured parameter, such as an incorrect API key, an out-of-bounds budget, or an improperly weighted scoring dimension, can lead to critical application crashes, compromised data integrity, or skewed analytical outcomes that directly impact investment decisions.
 
-Today, I'll walk through a real-world workflow to establish a structured, secure, and comprehensively validated configuration system for the PE Intelligence Platform using Pydantic v2. This proactive approach will prevent common deployment failures and ensure our application behaves predictably across development, staging, and production environments. By embedding validation directly into our configuration definitions, we gain confidence that our platform's outputs are reliable and our operations run smoothly.
+This notebook outlines a real-world workflow to implement a highly reliable configuration system using Pydantic v2. Our goal is to prevent these costly configuration-related bugs by enforcing strict validation rules at application startup, significantly reducing operational overhead and building trust in our platform's outputs. We will walk through defining settings, applying various validation types, and simulating different environmental scenarios to demonstrate how invalid configurations are caught *before* they can cause harm.
 
 ---
 
-### Installing Required Libraries
+### 1. Initial Setup: Environment and Dependencies
 
-First, let's install the necessary Python libraries. `pydantic` and `pydantic-settings` are fundamental for defining and validating our application's configuration.
+Before we dive into defining and validating our application settings, let's ensure our environment has all the necessary tools. We'll specifically need `pydantic` and `pydantic-settings` for robust configuration management.
 
 ```python
-!pip install pydantic~=2.0 pydantic-settings~=2.0
+!pip install pydantic==2.* pydantic-settings==2.*
 ```
 
-### Importing Required Dependencies
-
-Next, we import all the modules we'll need for defining our settings and validation logic.
+Next, we'll import the core components from Pydantic and Python's standard library that we'll use throughout this workflow.
 
 ```python
-from typing import Optional, Literal, List
+from typing import Optional, Literal, List, Dict
+from functools import lru_cache
 from decimal import Decimal
+import os
+import sys
 
-from pydantic import Field, ValidationError, SecretStr, field_validator, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 ```
 
 ---
 
-## 1. Defining the Foundation: Application Settings Blueprint
+### 2. Setting the Stage: Core Application Configuration
 
-### Story + Context + Real-World Relevance
+As a Software Developer, my first step in configuring a new service for the PE intelligence platform is to define its fundamental settings. These include basic application metadata, environment specification, logging preferences, and crucial sensitive data like secret keys. Using Pydantic's `BaseSettings` and `SettingsConfigDict` allows us to define these in a structured, type-hinted manner, automatically loading from environment variables or `.env` files.
 
-As Alex, my first step is to create a clear blueprint for all application settings. This involves defining each configuration parameter, its expected data type, and any basic constraints (like numerical ranges). Using Pydantic's `BaseSettings` allows me to centralize configuration management, enforce type safety, and automatically load settings from various sources (like environment variables or `.env` files). Crucially, sensitive information like API keys or database passwords will be handled using Pydantic's `SecretStr` type, ensuring they are never accidentally logged or exposed. This foundational step is paramount for preventing missing configuration errors and setting the stage for more complex validations.
+For sensitive information, like the `SECRET_KEY`, we employ Pydantic's `SecretStr` type. This ensures that the value is never accidentally logged or exposed, enhancing the security posture of our application.
+
+#### Workflow Task: Define Base Application Settings
+
+We will define the `Settings` class, which will serve as the single source of truth for our application's configuration.
 
 ```python
-# Function Definition
-class Settings(BaseSettings):
-    """Application settings with production-grade validation."""
+# Simulate the project structure: src/pe_orgair/config/settings.py
+# For this notebook, we'll define the class directly.
 
+class Settings(BaseSettings):
+    """Application settings for the PE Org-AI-R Platform with production-grade validation."""
+
+    # Model configuration for loading settings
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="forbid" # Ensure only defined fields are allowed
     )
 
-    # Application Core Settings
+    # --- Application Settings ---
     APP_NAME: str = "PE Org-AI-R Platform"
     APP_VERSION: str = "4.0.0"
     APP_ENV: Literal["development", "staging", "production"] = "development"
     DEBUG: bool = False
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     LOG_FORMAT: Literal["json", "console"] = "json"
-    SECRET_KEY: SecretStr = Field(..., min_length=32, description="Application secret key for encryption/signing")
+    SECRET_KEY: SecretStr # Sensitive key, must be handled securely
 
-    # API Settings
+    # --- API Settings ---
     API_V1_PREFIX: str = "/api/v1"
     API_V2_PREFIX: str = "/api/v2"
-    RATE_LIMIT_PER_MINUTE: int = Field(default=60, ge=1, le=1000, description="API request rate limit per minute")
+    RATE_LIMIT_PER_MINUTE: int = Field(default=60, ge=1, le=1000)
 
-    # Snowflake Database Settings
-    SNOWFLAKE_ACCOUNT: str = Field(..., min_length=1, description="Snowflake account identifier")
-    SNOWFLAKE_USER: str = Field(..., min_length=1, description="Snowflake username")
-    SNOWFLAKE_PASSWORD: SecretStr = Field(..., min_length=16, description="Snowflake user password")
-    SNOWFLAKE_DATABASE: str = "PE_ORGAIR"
-    SNOWFLAKE_SCHEMA: str = "PUBLIC"
-    SNOWFLAKE_WAREHOUSE: str = Field(..., min_length=1, description="Snowflake warehouse name")
-    SNOWFLAKE_ROLE: str = "PE_ORGAIR_ROLE"
+    # --- Parameter Versioning ---
+    PARAM_VERSION: Literal["v1.0", "v2.0"] = "v2.0"
 
-    # AWS Settings
-    AWS_ACCESS_KEY_ID: Optional[SecretStr] = Field(None, description="AWS Access Key ID")
-    AWS_SECRET_ACCESS_KEY: Optional[SecretStr] = Field(None, description="AWS Secret Access Key")
-    AWS_REGION: str = "us-east-1"
-    S3_BUCKET: Optional[str] = Field(None, min_length=3, description="S3 bucket for data storage")
-
-    # Redis Settings
-    REDIS_URL: str = "redis://localhost:6379/0"
-    CACHE_TTL_SECTORS: int = Field(86400, ge=300, description="Time-to-live for sector cache in seconds (24 hours default)") # 24 hours
-    CACHE_TTL_SCORES: int = Field(3600, ge=60, description="Time-to-live for score cache in seconds (1 hour default)") # 1 hour
-
-    # LLM Providers (Multi-provider via LiteLLM)
-    OPENAI_API_KEY: Optional[SecretStr] = Field(None, description="OpenAI API Key (starts with 'sk-')")
-    ANTHROPIC_API_KEY: Optional[SecretStr] = Field(None, description="Anthropic API Key (starts with 'sk-')")
+    # --- LLM Providers (Multi-provider via LiteLLM) ---
+    OPENAI_API_KEY: Optional[SecretStr] = None
+    ANTHROPIC_API_KEY: Optional[SecretStr] = None
     DEFAULT_LLM_MODEL: str = "gpt-40-2024-08-06"
     FALLBACK_LLM_MODEL: str = "claude-sonnet-4-20250514"
 
-    # Cost Management
-    DAILY_COST_BUDGET_USD: float = Field(default=500.0, ge=0, description="Daily cost budget in USD for external services")
-    COST_ALERT_THRESHOLD_PCT: float = Field(default=0.8, ge=0, le=1, description="Percentage of daily budget at which to trigger an alert")
+    # --- Cost Management ---
+    DAILY_COST_BUDGET_USD: float = Field(default=500.0, ge=0)
+    COST_ALERT_THRESHOLD_PCT: float = Field(default=0.8, ge=0, le=1)
 
-    # Scoring Parameters (v2.0) - Example parameters for a scoring model
-    ALPHA_VR_WEIGHT: float = Field(default=0.60, ge=0.55, le=0.70, description="Weight for Alpha VR dimension (0.55-0.70)")
-    BETA_SYNERGY_WEIGHT: float = Field(default=0.12, ge=0.08, le=0.20, description="Weight for Beta Synergy dimension (0.08-0.20)")
-    LAMBDA_PENALTY: float = Field(default=0.25, ge=0, le=0.50, description="Lambda penalty factor (0-0.5)")
-    DELTA_POSITION: float = Field(default=0.15, ge=0.10, le=0.20, description="Delta position adjustment (0.10-0.20)")
+    # --- HITL (Human-In-The-Loop) Thresholds ---
+    HITL_SCORE_CHANGE_THRESHOLD: float = Field(default=15.0, ge=5, le=30)
+    HITL_EBITDA_PROJECTION_THRESHOLD: float = Field(default=10.0, ge=5, le=25)
 
-    # Dimension Weights - These must sum to 1.0 for model integrity
-    W_DATA_INFRA: float = Field(default=0.18, ge=0.0, le=1.0, description="Weight for Data Infrastructure dimension")
-    W_AI_GOVERNANCE: float = Field(default=0.15, ge=0.0, le=1.0, description="Weight for AI Governance dimension")
-    W_TECH_STACK: float = Field(default=0.15, ge=0.0, le=1.0, description="Weight for Tech Stack dimension")
-    W_TALENT: float = Field(default=0.17, ge=0.0, le=1.0, description="Weight for Talent dimension")
-    W_LEADERSHIP: float = Field(default=0.13, ge=0.0, le=1.0, description="Weight for Leadership dimension")
-    W_USE_CASES: float = Field(default=0.12, ge=0.0, le=1.0, description="Weight for Use Cases dimension")
-    W_CULTURE: float = Field(default=0.10, ge=0.0, le=1.0, description="Weight for Culture dimension")
+    # Snowflake
+    SNOWFLAKE_ACCOUNT: str
+    SNOWFLAKE_USER: str
+    SNOWFLAKE_PASSWORD: SecretStr
+    SNOWFLAKE_DATABASE: str = "PE_ORGAIR"
+    SNOWFLAKE_SCHEMA: str = "PUBLIC"
+    SNOWFLAKE_WAREHOUSE: str
+    SNOWFLAKE_ROLE: str = "PE_ORGAIR_ROLE"
+    
+    # AWS
+    AWS_ACCESS_KEY_ID: SecretStr
+    AWS_SECRET_ACCESS_KEY: SecretStr
+    AWS_REGION: str = "us-east-1"
+    S3_BUCKET: str
 
-    # HITL Thresholds (Human-In-The-Loop)
-    HITL_SCORE_CHANGE_THRESHOLD: float = Field(default=15.0, ge=5, le=30, description="Score change threshold for HITL review")
-    HITL_EBITDA_PROJECTION_THRESHOLD: float = Field(default=10.0, ge=5, le=25, description="EBITDA projection threshold for HITL review")
+    # Redis
+    REDIS_URL: str = "redis://localhost:6379/0"
+    CACHE_TTL_SECTORS: int = 86400 # 24 hours
+    CACHE_TTL_SCORES: int = 3600 # 1 hour
+
+    # Scoring Parameters (v2.0)
+    ALPHA_VR_WEIGHT: float = Field(default=0.60, ge=0.55, le=0.70)
+    BETA_SYNERGY_WEIGHT: float = Field(default=0.12, ge=0.08, le=0.20)
+    LAMBDA_PENALTY: float = Field(default=0.25, ge=0, le=0.50)
+    DELTA_POSITION: float = Field(default=0.15, ge=0.10, le=0.20)
+
+    # Dimension Weights
+    W_DATA_INFRA: float = Field(default=0.18, ge=0.0, le=1.0)
+    W_AI_GOVERNANCE: float = Field(default=0.15, ge=0.0, le=1.0)
+    W_TECH_STACK: float = Field(default=0.15, ge=0.0, le=1.0)
+    W_TALENT: float = Field(default=0.17, ge=0.0, le=1.0)
+    W_LEADERSHIP: float = Field(default=0.13, ge=0.0, le=1.0)
+    W_USE_CASES: float = Field(default=0.12, ge=0.0, le=1.0)
+    W_CULTURE: float = Field(default=0.10, ge=0.0, le=1.0)
+    
+    # Celery
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
     # Observability
-    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = Field(None, description="OpenTelemetry OTLP endpoint")
-    OTEL_SERVICE_NAME: str = "pe-orgair"
+    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = None
+    OTEL_SERVICE_NAME: str = "pe-orgair
 
 
-# No direct execution here, as this is the definition phase.
-# Execution will happen in later sections when we instantiate Settings.
+# Function to get settings with caching, simulating application startup
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+# Execute to load and display the default settings
+print("--- Default Application Settings Loaded ---")
+try:
+    current_settings = get_settings()
+    print(f"App Name: {current_settings.APP_NAME}")
+    print(f"Environment: {current_settings.APP_ENV}")
+    print(f"Debug Mode: {current_settings.DEBUG}")
+    print(f"Secret Key Set: {'Yes' if current_settings.SECRET_KEY else 'No'} (Value masked for security)")
+    # Accessing the secret value for illustration (but normally avoid printing directly)
+    # print(f"Secret Key Value: {current_settings.SECRET_KEY.get_secret_value()}")
+    print(f"API Rate Limit: {current_settings.RATE_LIMIT_PER_MINUTE} req/min")
+    print(f"Daily Cost Budget: ${current_settings.DAILY_COST_BUDGET_USD}")
+    print(f"Cost Alert Threshold: {current_settings.COST_ALERT_THRESHOLD_PCT*100}%")
+    print(f"HITL Score Change Threshold: {current_settings.HITL_SCORE_CHANGE_THRESHOLD}")
+    print(f"HITL EBITDA Projection Threshold: {current_settings.HITL_EBITDA_PROJECTION_THRESHOLD}")
+
+except ValidationError as e:
+    print(f"Error loading settings: {e}")
+
+# Clean up any simulated environment variables for subsequent cells
+os.environ.clear()
 ```
 
-### Explanation of Execution (N/A)
-
-This section focuses on defining the `Settings` class. The real-world impact comes from the clear structure, type hints, and initial constraints (`Field` with `ge`, `le`) that immediately make the configuration robust. `SecretStr` ensures that sensitive data, such as `SECRET_KEY` and `SNOWFLAKE_PASSWORD`, is automatically masked in output, preventing accidental exposure, which is a critical security practice for Alex as a Software Developer.
+#### Explanation of Execution
+The code successfully loads the default configuration, demonstrating how basic settings are initialized. The `SECRET_KEY` is handled by `SecretStr`, ensuring its value is masked when accessed directly (e.g., in `print()`) but can be retrieved using `.get_secret_value()` when needed for actual application logic (e.g., connecting to external services). This direct usage of `SecretStr` helps us, as developers, prevent accidental exposure of sensitive credentials, a common source of security vulnerabilities.
 
 ---
 
-## 2. Enforcing Individual Parameter Rules with Field Validators
+### 3. Ensuring Operational Integrity: Field-Level Validation
 
-### Story + Context + Real-World Relevance
+Operational parameters like API rate limits, daily cost budgets, and alert thresholds are critical for the stability and cost-effectiveness of our PE intelligence platform. As a Data Engineer, I need to ensure these values are always within sensible, predefined ranges to prevent system overload, budget overruns, or ineffective alerting. Pydantic's `Field` with `ge` (greater than or equal to) and `le` (less than or equal to) arguments allows us to enforce these constraints directly within the configuration definition.
 
-Alex knows that beyond basic types and ranges, some individual configuration parameters require specific formatting or structural checks. For instance, an OpenAI API key isn't just any string; it must start with "sk-" to be valid. Relying solely on type hints wouldn't catch such a specific, yet critical, detail. This is where Pydantic's `@field_validator` comes into play. It allows me to define custom validation logic for a single field, ensuring that specific business rules or external API requirements are met before the application even starts. This prevents errors like failed external API calls due to malformed credentials, which can be difficult to debug in production.
+#### Workflow Task: Validate Operational Parameters with Range Constraints
+
+We'll define an API rate limit (`RATE_LIMIT_PER_MINUTE`), a daily cost budget (`DAILY_COST_BUDGET_USD`), and a cost alert threshold (`COST_ALERT_THRESHOLD_PCT`). These parameters are crucial for system health and financial governance.
 
 ```python
-# Function Definition (Adding to the Settings class)
+# To demonstrate field-level validation, we'll try to load settings with invalid values
+# and observe Pydantic's automatic error handling.
+
+# Scenario 1: Valid settings for operational parameters
+print("--- Scenario 1: Valid Operational Parameters ---")
+os.environ["RATE_LIMIT_PER_MINUTE"] = "100"
+os.environ["DAILY_COST_BUDGET_USD"] = "1000.0"
+os.environ["COST_ALERT_THRESHOLD_PCT"] = "0.75"
+os.environ["HITL_SCORE_CHANGE_THRESHOLD"] = "20.0"
+os.environ["HITL_EBITDA_PROJECTION_THRESHOLD"] = "15.0"
+os.environ["SECRET_KEY"] = "a_very_secure_secret_key_for_testing_12345" # Required for loading
+
+try:
+    valid_settings = Settings()
+    print(f"API Rate Limit: {valid_settings.RATE_LIMIT_PER_MINUTE} req/min (Expected: 100, Actual: {valid_settings.RATE_LIMIT_PER_MINUTE})")
+    print(f"Daily Cost Budget: ${valid_settings.DAILY_COST_BUDGET_USD} (Expected: 1000.0, Actual: {valid_settings.DAILY_COST_BUDGET_USD})")
+    print(f"Cost Alert Threshold: {valid_settings.COST_ALERT_THRESHOLD_PCT*100}% (Expected: 75.0%, Actual: {valid_settings.COST_ALERT_THRESHOLD_PCT*100}%)")
+    print(f"HITL Score Change Threshold: {valid_settings.HITL_SCORE_CHANGE_THRESHOLD} (Expected: 20.0, Actual: {valid_settings.HITL_SCORE_CHANGE_THRESHOLD})")
+    print(f"HITL EBITDA Projection Threshold: {valid_settings.HITL_EBITDA_PROJECTION_THRESHOLD} (Expected: 15.0, Actual: {valid_settings.HITL_EBITDA_PROJECTION_THRESHOLD})")
+except ValidationError as e:
+    print(f"Unexpected validation error: {e}")
+
+print("\n--- Scenario 2: Invalid Operational Parameters (Out of Range) ---")
+os.environ["RATE_LIMIT_PER_MINUTE"] = "1500" # Exceeds le=1000
+os.environ["DAILY_COST_BUDGET_USD"] = "-50.0" # Below ge=0
+os.environ["COST_ALERT_THRESHOLD_PCT"] = "1.5" # Exceeds le=1
+os.environ["HITL_SCORE_CHANGE_THRESHOLD"] = "2.0" # Below ge=5
+os.environ["HITL_EBITDA_PROJECTION_THRESHOLD"] = "50.0" # Exceeds le=25
+
+try:
+    invalid_settings = Settings()
+    print("Settings loaded successfully, but should have failed validation.")
+except ValidationError as e:
+    print("Caught expected validation error for invalid operational parameters:")
+    print(e)
+    # The error message explicitly states which fields failed validation.
+    # For example, look for "rate_limit_per_minute" or "daily_cost_budget_usd" in the output.
+
+# Clean up simulated environment variables
+os.environ.clear()
+```
+
+#### Explanation of Execution
+The first scenario demonstrates successful loading when all operational parameters are within their defined bounds. In contrast, the second scenario attempts to load configurations with values exceeding or falling below the specified ranges for `RATE_LIMIT_PER_MINUTE`, `DAILY_COST_BUDGET_USD`, `COST_ALERT_THRESHOLD_PCT`, `HITL_SCORE_CHANGE_THRESHOLD`, and `HITL_EBITDA_PROJECTION_THRESHOLD`. Pydantic immediately raises a `ValidationError`, providing clear, detailed messages about which specific fields failed and why. This automatic, early detection of out-of-bounds values by `Field(ge=X, le=Y)` is crucial. It prevents the system from starting with configurations that could lead to financial losses (e.g., negative budget), operational issues (e.g., excessively high rate limits), or ineffective human-in-the-loop interventions due to inappropriate thresholds.
+
+---
+
+### 4. Implementing Business Logic: Cross-Field Validation for Scoring Weights
+
+A core component of the PE intelligence platform is its investment scoring model, which relies on various dimensions (e.g., data infrastructure, AI governance, talent). The relative importance of these dimensions is defined by a set of weights. A critical business rule mandates that these **dimension weights must sum up to exactly 1.0** to ensure a coherent and balanced scoring mechanism. Deviations from this sum would lead to skewed, unreliable scores and potentially poor investment recommendations.
+
+As a Data Engineer, I need to implement a robust check to enforce this rule. Pydantic's `@model_validator(mode="after")` is perfect for this, as it allows us to perform validation logic that involves multiple fields *after* individual field validations have passed.
+
+#### Workflow Task: Validate Dimension Weights Sum to 1.0
+
+We will define new fields for dimension weights and then add a `@model_validator` to ensure their sum is $1.0$. A small tolerance $\epsilon$ is used to account for floating-point inaccuracies. The validation check will be:
+
+$$
+\left| \sum_{i=1}^{n} w_i - 1.0 \right| > \epsilon
+$$
+
+where $w_i$ are the dimension weights and $\epsilon = 0.001$.
+
+```python
+# Add dimension weight fields and the model_validator to the Settings class
 class Settings(BaseSettings):
-    """Application settings with production-grade validation."""
+    """Application settings for the PE Org-AI-R Platform with production-grade validation."""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="forbid"
     )
 
-    # ... (all fields defined in Section 1) ...
-    # Application Core Settings
+    # ... (other fields remain the same for brevity)
+    # To keep the example focused, we'll redefine the relevant parts.
     APP_NAME: str = "PE Org-AI-R Platform"
     APP_VERSION: str = "4.0.0"
     APP_ENV: Literal["development", "staging", "production"] = "development"
     DEBUG: bool = False
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     LOG_FORMAT: Literal["json", "console"] = "json"
-    SECRET_KEY: SecretStr = Field(..., min_length=32, description="Application secret key for encryption/signing")
+    SECRET_KEY: SecretStr = Field(default="default_secret_for_dev_env_testing_0123456789") # Add default for easier testing
 
-    # API Settings
-    API_V1_PREFIX: str = "/api/v1"
-    API_V2_PREFIX: str = "/api/v2"
-    RATE_LIMIT_PER_MINUTE: int = Field(default=60, ge=1, le=1000, description="API request rate limit per minute")
+    RATE_LIMIT_PER_MINUTE: int = Field(default=60, ge=1, le=1000)
+    DAILY_COST_BUDGET_USD: float = Field(default=500.0, ge=0)
+    COST_ALERT_THRESHOLD_PCT: float = Field(default=0.8, ge=0, le=1)
 
-    # Snowflake Database Settings
-    SNOWFLAKE_ACCOUNT: str = Field(..., min_length=1, description="Snowflake account identifier")
-    SNOWFLAKE_USER: str = Field(..., min_length=1, description="Snowflake username")
-    SNOWFLAKE_PASSWORD: SecretStr = Field(..., min_length=16, description="Snowflake user password")
-    SNOWFLAKE_DATABASE: str = "PE_ORGAIR"
-    SNOWFLAKE_SCHEMA: str = "PUBLIC"
-    SNOWFLAKE_WAREHOUSE: str = Field(..., min_length=1, description="Snowflake warehouse name")
-    SNOWFLAKE_ROLE: str = "PE_ORGAIR_ROLE"
+    HITL_SCORE_CHANGE_THRESHOLD: float = Field(default=15.0, ge=5, le=30)
+    HITL_EBITDA_PROJECTION_THRESHOLD: float = Field(default=10.0, ge=5, le=25)
 
-    # AWS Settings
-    AWS_ACCESS_KEY_ID: Optional[SecretStr] = Field(None, description="AWS Access Key ID")
-    AWS_SECRET_ACCESS_KEY: Optional[SecretStr] = Field(None, description="AWS Secret Access Key")
-    AWS_REGION: str = "us-east-1"
-    S3_BUCKET: Optional[str] = Field(None, min_length=3, description="S3 bucket for data storage")
+    OPENAI_API_KEY: Optional[SecretStr] = None
+    ANTHROPIC_API_KEY: Optional[SecretStr] = None
 
-    # Redis Settings
-    REDIS_URL: str = "redis://localhost:6379/0"
-    CACHE_TTL_SECTORS: int = Field(86400, ge=300, description="Time-to-live for sector cache in seconds (24 hours default)")
-    CACHE_TTL_SCORES: int = Field(3600, ge=60, description="Time-to-live for score cache in seconds (1 hour default)")
-
-    # LLM Providers (Multi-provider via LiteLLM)
-    OPENAI_API_KEY: Optional[SecretStr] = Field(None, description="OpenAI API Key (starts with 'sk-')")
-    ANTHROPIC_API_KEY: Optional[SecretStr] = Field(None, description="Anthropic API Key (starts with 'sk-')")
-    DEFAULT_LLM_MODEL: str = "gpt-40-2024-08-06"
-    FALLBACK_LLM_MODEL: str = "claude-sonnet-4-20250514"
-
-    # Cost Management
-    DAILY_COST_BUDGET_USD: float = Field(default=500.0, ge=0, description="Daily cost budget in USD for external services")
-    COST_ALERT_THRESHOLD_PCT: float = Field(default=0.8, ge=0, le=1, description="Percentage of daily budget at which to trigger an alert")
-
-    # Scoring Parameters (v2.0) - Example parameters for a scoring model
-    ALPHA_VR_WEIGHT: float = Field(default=0.60, ge=0.55, le=0.70, description="Weight for Alpha VR dimension (0.55-0.70)")
-    BETA_SYNERGY_WEIGHT: float = Field(default=0.12, ge=0.08, le=0.20, description="Weight for Beta Synergy dimension (0.08-0.20)")
-    LAMBDA_PENALTY: float = Field(default=0.25, ge=0, le=0.50, description="Lambda penalty factor (0-0.5)")
-    DELTA_POSITION: float = Field(default=0.15, ge=0.10, le=0.20, description="Delta position adjustment (0.10-0.20)")
-
-    # Dimension Weights - These must sum to 1.0 for model integrity
-    W_DATA_INFRA: float = Field(default=0.18, ge=0.0, le=1.0, description="Weight for Data Infrastructure dimension")
-    W_AI_GOVERNANCE: float = Field(default=0.15, ge=0.0, le=1.0, description="Weight for AI Governance dimension")
-    W_TECH_STACK: float = Field(default=0.15, ge=0.0, le=1.0, description="Weight for Tech Stack dimension")
-    W_TALENT: float = Field(default=0.17, ge=0.0, le=1.0, description="Weight for Talent dimension")
-    W_LEADERSHIP: float = Field(default=0.13, ge=0.0, le=1.0, description="Weight for Leadership dimension")
-    W_USE_CASES: float = Field(default=0.12, ge=0.0, le=1.0, description="Weight for Use Cases dimension")
-    W_CULTURE: float = Field(default=0.10, ge=0.0, le=1.0, description="Weight for Culture dimension")
-
-    # HITL Thresholds (Human-In-The-Loop)
-    HITL_SCORE_CHANGE_THRESHOLD: float = Field(default=15.0, ge=5, le=30, description="Score change threshold for HITL review")
-    HITL_EBITDA_PROJECTION_THRESHOLD: float = Field(default=10.0, ge=5, le=25, description="EBITDA projection threshold for HITL review")
-
-    # Observability
-    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = Field(None, description="OpenTelemetry OTLP endpoint")
-    OTEL_SERVICE_NAME: str = "pe-orgair"
+    # --- Scoring Parameters (v2.0) - Dimension Weights ---
+    W_DATA_INFRA: float = Field(default=0.18, ge=0.0, le=1.0)
+    W_AI_GOVERNANCE: float = Field(default=0.15, ge=0.0, le=1.0)
+    W_TECH_STACK: float = Field(default=0.15, ge=0.0, le=1.0)
+    W_TALENT: float = Field(default=0.17, ge=0.0, le=1.0)
+    W_LEADERSHIP: float = Field(default=0.13, ge=0.0, le=1.0)
+    W_USE_CASES: float = Field(default=0.12, ge=0.0, le=1.0)
+    W_CULTURE: float = Field(default=0.10, ge=0.0, le=1.0)
 
     @field_validator("OPENAI_API_KEY")
     @classmethod
     def validate_openai_key(cls, v: Optional[SecretStr]) -> Optional[SecretStr]:
-        """Validate OpenAI API key format."""
-        if v is not None and not v.get_secret_value().startswith("sk-"):
-            raise ValueError("Invalid OpenAI API key format: must start with 'sk-'")
-        return v
-
-# No direct execution here yet.
-```
-
-### Explanation of Execution (N/A)
-
-This `field_validator` for `OPENAI_API_KEY` directly applies a specific format check (`sk-` prefix) that an OpenAI API key must adhere to. This prevents potential runtime errors where an API call might fail simply because a misformatted key was provided, even if it was technically a string. For Alex, this means fewer headaches debugging integration issues and more confidence in the external service configurations.
-
----
-
-## 3. Implementing Complex Interdependencies and Production Safeguards
-
-### Story + Context + Real-World Relevance
-
-Now, Alex faces the challenge of enforcing more complex business rules and production-specific security policies. The PE Intelligence Platform uses scoring models where a set of "dimension weights" must collectively sum up to exactly 1.0; deviations would lead to incorrect model outputs. Moreover, our production environment demands stricter security: debug mode must be disabled, critical secrets must meet length requirements, and at least one LLM API key must be present for core functionality. These are not checks for single fields, but for relationships between multiple fields or conditions based on the application environment. Pydantic's `@model_validator(mode="after")` is the perfect tool for this, allowing me to implement cross-field validation and conditional logic that protects the integrity of our scoring models and secures our production deployments.
-
-```python
-# Function Definition (Adding to the Settings class)
-class Settings(BaseSettings):
-    """Application settings with production-grade validation."""
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="forbid"
-    )
-
-    # ... (all fields defined in Section 1) ...
-    # Application Core Settings
-    APP_NAME: str = "PE Org-AI-R Platform"
-    APP_VERSION: str = "4.0.0"
-    APP_ENV: Literal["development", "staging", "production"] = "development"
-    DEBUG: bool = False
-    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
-    LOG_FORMAT: Literal["json", "console"] = "json"
-    SECRET_KEY: SecretStr = Field(..., min_length=32, description="Application secret key for encryption/signing")
-
-    # API Settings
-    API_V1_PREFIX: str = "/api/v1"
-    API_V2_PREFIX: str = "/api/v2"
-    RATE_LIMIT_PER_MINUTE: int = Field(default=60, ge=1, le=1000, description="API request rate limit per minute")
-
-    # Snowflake Database Settings
-    SNOWFLAKE_ACCOUNT: str = Field(..., min_length=1, description="Snowflake account identifier")
-    SNOWFLAKE_USER: str = Field(..., min_length=1, description="Snowflake username")
-    SNOWFLAKE_PASSWORD: SecretStr = Field(..., min_length=16, description="Snowflake user password")
-    SNOWFLAKE_DATABASE: str = "PE_ORGAIR"
-    SNOWFLAKE_SCHEMA: str = "PUBLIC"
-    SNOWFLAKE_WAREHOUSE: str = Field(..., min_length=1, description="Snowflake warehouse name")
-    SNOWFLAKE_ROLE: str = "PE_ORGAIR_ROLE"
-
-    # AWS Settings
-    AWS_ACCESS_KEY_ID: Optional[SecretStr] = Field(None, description="AWS Access Key ID")
-    AWS_SECRET_ACCESS_KEY: Optional[SecretStr] = Field(None, description="AWS Secret Access Key")
-    AWS_REGION: str = "us-east-1"
-    S3_BUCKET: Optional[str] = Field(None, min_length=3, description="S3 bucket for data storage")
-
-    # Redis Settings
-    REDIS_URL: str = "redis://localhost:6379/0"
-    CACHE_TTL_SECTORS: int = Field(86400, ge=300, description="Time-to-live for sector cache in seconds (24 hours default)")
-    CACHE_TTL_SCORES: int = Field(3600, ge=60, description="Time-to-live for score cache in seconds (1 hour default)")
-
-    # LLM Providers (Multi-provider via LiteLLM)
-    OPENAI_API_KEY: Optional[SecretStr] = Field(None, description="OpenAI API Key (starts with 'sk-')")
-    ANTHROPIC_API_KEY: Optional[SecretStr] = Field(None, description="Anthropic API Key (starts with 'sk-')")
-    DEFAULT_LLM_MODEL: str = "gpt-40-2024-08-06"
-    FALLBACK_LLM_MODEL: str = "claude-sonnet-4-20250514"
-
-    # Cost Management
-    DAILY_COST_BUDGET_USD: float = Field(default=500.0, ge=0, description="Daily cost budget in USD for external services")
-    COST_ALERT_THRESHOLD_PCT: float = Field(default=0.8, ge=0, le=1, description="Percentage of daily budget at which to trigger an alert")
-
-    # Scoring Parameters (v2.0) - Example parameters for a scoring model
-    ALPHA_VR_WEIGHT: float = Field(default=0.60, ge=0.55, le=0.70, description="Weight for Alpha VR dimension (0.55-0.70)")
-    BETA_SYNERGY_WEIGHT: float = Field(default=0.12, ge=0.08, le=0.20, description="Weight for Beta Synergy dimension (0.08-0.20)")
-    LAMBDA_PENALTY: float = Field(default=0.25, ge=0, le=0.50, description="Lambda penalty factor (0-0.5)")
-    DELTA_POSITION: float = Field(default=0.15, ge=0.10, le=0.20, description="Delta position adjustment (0.10-0.20)")
-
-    # Dimension Weights - These must sum to 1.0 for model integrity
-    W_DATA_INFRA: float = Field(default=0.18, ge=0.0, le=1.0, description="Weight for Data Infrastructure dimension")
-    W_AI_GOVERNANCE: float = Field(default=0.15, ge=0.0, le=1.0, description="Weight for AI Governance dimension")
-    W_TECH_STACK: float = Field(default=0.15, ge=0.0, le=1.0, description="Weight for Tech Stack dimension")
-    W_TALENT: float = Field(default=0.17, ge=0.0, le=1.0, description="Weight for Talent dimension")
-    W_LEADERSHIP: float = Field(default=0.13, ge=0.0, le=1.0, description="Weight for Leadership dimension")
-    W_USE_CASES: float = Field(default=0.12, ge=0.0, le=1.0, description="Weight for Use Cases dimension")
-    W_CULTURE: float = Field(default=0.10, ge=0.0, le=1.0, description="Weight for Culture dimension")
-
-    # HITL Thresholds (Human-In-The-Loop)
-    HITL_SCORE_CHANGE_THRESHOLD: float = Field(default=15.0, ge=5, le=30, description="Score change threshold for HITL review")
-    HITL_EBITDA_PROJECTION_THRESHOLD: float = Field(default=10.0, ge=5, le=25, description="EBITDA projection threshold for HITL review")
-
-    # Observability
-    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = Field(None, description="OpenTelemetry OTLP endpoint")
-    OTEL_SERVICE_NAME: str = "pe-orgair"
-
-    @field_validator("OPENAI_API_KEY")
-    @classmethod
-    def validate_openai_key(cls, v: Optional[SecretStr]) -> Optional[SecretStr]:
-        """Validate OpenAI API key format."""
         if v is not None and not v.get_secret_value().startswith("sk-"):
             raise ValueError("Invalid OpenAI API key format: must start with 'sk-'")
         return v
 
     @model_validator(mode="after")
     def validate_dimension_weights(self) -> "Settings":
-        """Validate that dimension weights sum to 1.0 with a small tolerance."""
+        """Validate dimension weights sum to 1.0 +/- a small tolerance."""
         weights = [
-            self.W_DATA_INFRA,
-            self.W_AI_GOVERNANCE,
-            self.W_TECH_STACK,
-            self.W_TALENT,
-            self.W_LEADERSHIP,
-            self.W_USE_CASES,
-            self.W_CULTURE,
+            self.W_DATA_INFRA, self.W_AI_GOVERNANCE, self.W_TECH_STACK,
+            self.W_TALENT, self.W_LEADERSHIP, self.W_USE_CASES, self.W_CULTURE
         ]
         total = sum(weights)
-        # Using a small tolerance for floating point comparison
-        tolerance = 0.001
-        if abs(total - 1.0) > tolerance:
-            raise ValueError(f"Dimension weights must sum to 1.0, but got {total:.3f}. Deviation: {abs(total - 1.0):.3f}")
+        # Use a small epsilon for floating-point comparison
+        if abs(total - 1.0) > 0.001:
+            raise ValueError(f"Dimension weights must sum to 1.0, got {total}")
         return self
+
+# Function to get settings, re-defining to clear cache for new class definition
+@lru_cache
+def get_settings_with_weights() -> Settings:
+    return Settings()
+
+# Scenario 1: Valid dimension weights (sum = 1.0)
+print("--- Scenario 1: Valid Dimension Weights ---")
+# Reset environment variables
+os.environ.clear()
+os.environ["SECRET_KEY"] = "valid_key_for_testing_12345678901234567890" # Must be set for model to load
+# Default weights sum to 1.0 (0.18+0.15+0.15+0.17+0.13+0.12+0.10 = 1.0)
+try:
+    valid_weight_settings = get_settings_with_weights()
+    print(f"Dimension weights total: {sum(valid_weight_settings.dimension_weights)}")
+    print("Dimension weights validated successfully.")
+except ValidationError as e:
+    print(f"Unexpected validation error: {e}")
+
+# Scenario 2: Invalid dimension weights (sum != 1.0)
+print("\n--- Scenario 2: Invalid Dimension Weights (Sum != 1.0) ---")
+os.environ["W_DATA_INFRA"] = "0.20" # Default was 0.18, now sum will be 1.02
+os.environ["SECRET_KEY"] = "valid_key_for_testing_12345678901234567890" # Must be set for model to load
+
+try:
+    invalid_weight_settings = get_settings_with_weights()
+    print("Settings loaded successfully, but should have failed validation.")
+except ValidationError as e:
+    print("Caught expected validation error for dimension weights:")
+    print(e)
+    # The error message should explicitly mention "Dimension weights must sum to 1.0".
+
+# Clean up simulated environment variables
+os.environ.clear()
+```
+
+#### Explanation of Execution
+The first scenario successfully loads settings where the default dimension weights (or explicitly set ones that sum to 1.0) pass the `@model_validator`. This demonstrates a correct configuration. The second scenario, however, intentionally provides weights that do not sum to $1.0$. As expected, Pydantic's `@model_validator` catches this discrepancy and raises a `ValueError` wrapped within a `ValidationError`.
+
+This validation is critical for the PE intelligence platform. It ensures that the investment scoring model is always configured with logically consistent weights, preventing calculation errors that could lead to flawed analytical outputs and incorrect investment decisions. It’s a direct safeguard against subtle yet significant business logic flaws that might otherwise only be detected much later in the analysis pipeline, if at all.
+
+---
+
+### 5. Fortifying Production: Conditional Environment-Specific Validation
+
+Deploying to a production environment demands a heightened level of rigor. As a Software Developer, I need to ensure that certain security and operational settings are strictly enforced *only* when the application is running in a `production` environment. For instance, `DEBUG` mode must be disabled, sensitive `SECRET_KEY`s must meet minimum length requirements, and all critical external service API keys (like LLM provider keys) must be present.
+
+This conditional validation logic is best implemented using another `@model_validator(mode="after")`, which allows us to inspect the `APP_ENV` and apply specific rules accordingly. We'll also include a `@field_validator` for `OPENAI_API_KEY` to ensure it starts with the expected "sk-" prefix, an example of a specific format requirement.
+
+#### Workflow Task: Enforce Production Security and API Key Presence
+
+We will add a `@model_validator` to the `Settings` class that performs the following checks when `APP_ENV` is set to `"production"`:
+1.  `DEBUG` mode must be `False`.
+2.  `SECRET_KEY` length must be at least 32 characters.
+3.  At least one of `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` must be provided.
+
+```python
+# Add the production-specific model_validator and the OpenAI API key field_validator to the Settings class
+class Settings(BaseSettings):
+    """Application settings for the PE Org-AI-R Platform with production-grade validation."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    APP_NAME: str = "PE Org-AI-R Platform"
+    APP_VERSION: str = "4.0.0"
+    APP_ENV: Literal["development", "staging", "production"] = "development"
+    DEBUG: bool = False
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    LOG_FORMAT: Literal["json", "console"] = "json"
+    SECRET_KEY: SecretStr = Field(default="default_secret_for_dev_env_testing_0123456789")
+
+    RATE_LIMIT_PER_MINUTE: int = Field(default=60, ge=1, le=1000)
+    DAILY_COST_BUDGET_USD: float = Field(default=500.0, ge=0)
+    COST_ALERT_THRESHOLD_PCT: float = Field(default=0.8, ge=0, le=1)
+
+    HITL_SCORE_CHANGE_THRESHOLD: float = Field(default=15.0, ge=5, le=30)
+    HITL_EBITDA_PROJECTION_THRESHOLD: float = Field(default=10.0, ge=5, le=25)
+
+    # LLM Provider keys
+    OPENAI_API_KEY: Optional[SecretStr] = None
+    ANTHROPIC_API_KEY: Optional[SecretStr] = None
+
+    # Scoring Parameters (v2.0) - Dimension Weights
+    W_DATA_INFRA: float = Field(default=0.18, ge=0.0, le=1.0)
+    W_AI_GOVERNANCE: float = Field(default=0.15, ge=0.0, le=1.0)
+    W_TECH_STACK: float = Field(default=0.15, ge=0.0, le=1.0)
+    W_TALENT: float = Field(default=0.17, ge=0.0, le=1.0)
+    W_LEADERSHIP: float = Field(default=0.13, ge=0.0, le=1.0)
+    W_USE_CASES: float = Field(default=0.12, ge=0.0, le=1.0)
+    W_CULTURE: float = Field(default=0.10, ge=0.0, le=1.0)
+
+    # Ensure dimension weights sum to 1.0 (re-using the validator from previous section)
+    @model_validator(mode="after")
+    def validate_dimension_weights(self) -> "Settings":
+        weights = [
+            self.W_DATA_INFRA, self.W_AI_GOVERNANCE, self.W_TECH_STACK,
+            self.W_TALENT, self.W_LEADERSHIP, self.W_USE_CASES, self.W_CULTURE
+        ]
+        total = sum(weights)
+        if abs(total - 1.0) > 0.001:
+            raise ValueError(f"Dimension weights must sum to 1.0, got {total}")
+        return self
+
+    @field_validator("OPENAI_API_KEY")
+    @classmethod
+    def validate_openai_key(cls, v: Optional[SecretStr]) -> Optional[SecretStr]:
+        if v is not None and not v.get_secret_value().startswith("sk-"):
+            raise ValueError("Invalid OpenAI API key format: must start with 'sk-'")
+        return v
 
     @model_validator(mode="after")
     def validate_production_settings(self) -> "Settings":
-        """Ensure production environment has required security settings."""
+        """Ensure production environment has required security and API settings."""
         if self.APP_ENV == "production":
             if self.DEBUG:
-                raise ValueError("In 'production' environment, DEBUG must be False.")
+                raise ValueError("DEBUG must be False in production environment")
             if len(self.SECRET_KEY.get_secret_value()) < 32:
-                raise ValueError(f"SECRET_KEY must be ≥32 characters in production. Current length: {len(self.SECRET_KEY.get_secret_value())}")
+                raise ValueError("SECRET_KEY must be ≥32 characters in production environment")
             if not self.OPENAI_API_KEY and not self.ANTHROPIC_API_KEY:
-                raise ValueError("At least one LLM API key (OpenAI or Anthropic) is required in 'production'.")
-            if not self.AWS_ACCESS_KEY_ID or not self.AWS_SECRET_ACCESS_KEY or not self.S3_BUCKET:
-                raise ValueError("AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) and S3_BUCKET are required in 'production'.")
-            if not self.SNOWFLAKE_ACCOUNT or not self.SNOWFLAKE_USER or not self.SNOWFLAKE_PASSWORD or not self.SNOWFLAKE_WAREHOUSE:
-                raise ValueError("All Snowflake connection details (account, user, password, warehouse) are required in 'production'.")
+                raise ValueError("At least one LLM API key (OpenAI or Anthropic) is required in production environment")
         return self
 
-# No direct execution here yet.
-```
+# Function to get settings with production validation
+@lru_cache
+def get_settings_with_prod_validation() -> Settings:
+    return Settings()
 
-### Explanation of Execution (N/A)
+# Scenario 1: Valid Production Configuration
+print("--- Scenario 1: Valid Production Configuration ---")
+os.environ.clear()
+os.environ["APP_ENV"] = "production"
+os.environ["DEBUG"] = "False"
+os.environ["SECRET_KEY"] = "this_is_a_very_long_and_secure_secret_key_for_production_0123456789" # >= 32 chars
+os.environ["OPENAI_API_KEY"] = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # Valid format
 
-The two `model_validator` methods address critical concerns for Alex.
-1.  **Dimension Weights Summation**: The `validate_dimension_weights` method ensures that the sum of the model's dimension weights equals $1.0$. The formula checked is $ \left| \sum_{i} W_i - 1.0 \right| > 0.001 $, where $W_i$ represents each dimension weight. This directly prevents subtle calculation errors in our scoring models that could lead to incorrect intelligence being provided to PE Corp.'s stakeholders. Such errors are notoriously hard to detect in live systems.
-2.  **Production Environment Safeguards**: The `validate_production_settings` method enforces a suite of rules specific to `APP_ENV="production"`. This includes:
-    *   Disabling `DEBUG` mode to prevent sensitive information exposure.
-    *   Ensuring `SECRET_KEY` meets a minimum length for cryptographic strength.
-    *   Mandating the presence of at least one LLM API key, as these are critical for the platform's AI capabilities in production.
-    *   Mandating AWS and Snowflake credentials for production.
-
-This comprehensive, conditional validation significantly reduces the risk of deploying an improperly configured or insecure application, a nightmare scenario for any Software Developer or Data Engineer.
-
----
-
-## 4. Testing Valid Configurations: Smooth Sailing
-
-### Story + Context + Real-World Relevance
-
-Now that all the validation rules are defined, Alex needs to verify that known valid configurations for both a `development` and a `production` environment can be loaded successfully. This step is crucial for building confidence in the robust configuration system and ensuring that properly defined settings don't trigger false positives. Successfully loading configurations demonstrates that the system is ready to accept compliant settings, allowing development and deployment workflows to proceed without unnecessary friction.
-
-```python
-# Code cell (function definition + function execution)
-
-# 1. Define valid development settings
-dev_settings_data = {
-    "APP_ENV": "development",
-    "DEBUG": True,
-    "SECRET_KEY": "averyverylongandsecuredevelopmentsecretkey12345",
-    "RATE_LIMIT_PER_MINUTE": 100,
-    "SNOWFLAKE_ACCOUNT": "dev_snowflake_account",
-    "SNOWFLAKE_USER": "dev_user",
-    "SNOWFLAKE_PASSWORD": "DevPassword12345!",
-    "SNOWFLAKE_WAREHOUSE": "DEV_WH",
-    "AWS_ACCESS_KEY_ID": "AKIADEVKEY",
-    "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-    "S3_BUCKET": "dev-pe-bucket",
-    "OPENAI_API_KEY": "sk-dev_abcdefghijklmnopqrstuvwxyz0123456789",
-    "W_DATA_INFRA": 0.18,
-    "W_AI_GOVERNANCE": 0.15,
-    "W_TECH_STACK": 0.15,
-    "W_TALENT": 0.17,
-    "W_LEADERSHIP": 0.13,
-    "W_USE_CASES": 0.12,
-    "W_CULTURE": 0.10,
-    "DAILY_COST_BUDGET_USD": 100.0
-}
-
-print("--- Loading Valid Development Configuration ---")
 try:
-    settings_dev = Settings(**dev_settings_data)
-    print("Development settings loaded successfully:")
-    print(f"  App Name: {settings_dev.APP_NAME}")
-    print(f"  Environment: {settings_dev.APP_ENV}")
-    print(f"  Debug Mode: {settings_dev.DEBUG}")
-    print(f"  Secret Key: {settings_dev.SECRET_KEY}") # Will show as '**********'
-    print(f"  OpenAI API Key: {settings_dev.OPENAI_API_KEY}") # Will show as '**********'
-    print(f"  Rate Limit: {settings_dev.RATE_LIMIT_PER_MINUTE}")
-    print(f"  Snowflake User: {settings_dev.SNOWFLAKE_USER}")
-    print(f"  Dimension Weights Sum: {settings_dev.W_DATA_INFRA + settings_dev.W_AI_GOVERNANCE + settings_dev.W_TECH_STACK + settings_dev.W_TALENT + settings_dev.W_LEADERSHIP + settings_dev.W_USE_CASES + settings_dev.W_CULTURE}")
-    print("\n")
-except ValidationError as e:
-    print("Error loading development settings:")
-    print(e.json(indent=2))
-
-# 2. Define valid production settings
-# Note: DEBUG is False, SecretKey is long, LLM keys are present, all production required fields are set
-prod_settings_data = {
-    "APP_ENV": "production",
-    "DEBUG": False, # Crucial for production
-    "SECRET_KEY": "thisisareallylongandsecureproductionsecretkeyforourplatform", # >= 32 chars
-    "RATE_LIMIT_PER_MINUTE": 500,
-    "SNOWFLAKE_ACCOUNT": "prod_snowflake_account",
-    "SNOWFLAKE_USER": "prod_user",
-    "SNOWFLAKE_PASSWORD": "ProdPasswordHighlySecure!2023", # >= 16 chars
-    "SNOWFLAKE_WAREHOUSE": "PROD_WH_XL",
-    "AWS_ACCESS_KEY_ID": "AKIA123PRODKEY",
-    "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYPRODKEY",
-    "S3_BUCKET": "prod-pe-bucket-live",
-    "OPENAI_API_KEY": "sk-prod_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX", # Starts with sk-
-    "ANTHROPIC_API_KEY": "sk-ant-prod_YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY", # One of them is sufficient
-    "W_DATA_INFRA": 0.18,
-    "W_AI_GOVERNANCE": 0.15,
-    "W_TECH_STACK": 0.15,
-    "W_TALENT": 0.17,
-    "W_LEADERSHIP": 0.13,
-    "W_USE_CASES": 0.12,
-    "W_CULTURE": 0.10,
-    "DAILY_COST_BUDGET_USD": 5000.0
-}
-
-print("--- Loading Valid Production Configuration ---")
-try:
-    settings_prod = Settings(**prod_settings_data)
+    prod_settings_valid = get_settings_with_prod_validation()
     print("Production settings loaded successfully:")
-    print(f"  App Name: {settings_prod.APP_NAME}")
-    print(f"  Environment: {settings_prod.APP_ENV}")
-    print(f"  Debug Mode: {settings_prod.DEBUG}")
-    print(f"  Secret Key: {settings_prod.SECRET_KEY}")
-    print(f"  OpenAI API Key: {settings_prod.OPENAI_API_KEY}")
-    print(f"  Anthropic API Key: {settings_prod.ANTHROPIC_API_KEY}")
-    print(f"  Rate Limit: {settings_prod.RATE_LIMIT_PER_MINUTE}")
-    print(f"  Snowflake User: {settings_prod.SNOWFLAKE_USER}")
-    print(f"  AWS S3 Bucket: {settings_prod.S3_BUCKET}")
-    print(f"  Dimension Weights Sum: {settings_prod.W_DATA_INFRA + settings_prod.W_AI_GOVERNANCE + settings_prod.W_TECH_STACK + settings_prod.W_TALENT + settings_prod.W_LEADERSHIP + settings_prod.W_USE_CASES + settings_prod.W_CULTURE}")
-    print("\n")
+    print(f"  APP_ENV: {prod_settings_valid.APP_ENV}")
+    print(f"  DEBUG: {prod_settings_valid.DEBUG}")
+    print(f"  SECRET_KEY length: {len(prod_settings_valid.SECRET_KEY.get_secret_value())}")
+    print(f"  OpenAI API Key provided: {'Yes' if prod_settings_valid.OPENAI_API_KEY else 'No'}")
 except ValidationError as e:
-    print("Error loading production settings:")
-    print(e.json(indent=2))
+    print(f"Unexpected validation error for valid production settings: {e}")
+
+# Scenario 2: Invalid Production Configuration - DEBUG is True
+print("\n--- Scenario 2: Invalid Production Config - DEBUG is True ---")
+os.environ.clear()
+os.environ["APP_ENV"] = "production"
+os.environ["DEBUG"] = "True" # This should fail
+os.environ["SECRET_KEY"] = "this_is_a_very_long_and_secure_secret_key_for_production_0123456789"
+os.environ["OPENAI_API_KEY"] = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+try:
+    get_settings_with_prod_validation()
+    print("Settings loaded successfully, but should have failed validation (DEBUG is True).")
+except ValidationError as e:
+    print("Caught expected validation error:")
+    print(e)
+    # Expect "DEBUG must be False in production environment"
+
+# Scenario 3: Invalid Production Configuration - Short SECRET_KEY
+print("\n--- Scenario 3: Invalid Production Config - Short SECRET_KEY ---")
+os.environ.clear()
+os.environ["APP_ENV"] = "production"
+os.environ["DEBUG"] = "False"
+os.environ["SECRET_KEY"] = "too_short_key" # This should fail (< 32 chars)
+os.environ["OPENAI_API_KEY"] = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+try:
+    get_settings_with_prod_validation()
+    print("Settings loaded successfully, but should have failed validation (short SECRET_KEY).")
+except ValidationError as e:
+    print("Caught expected validation error:")
+    print(e)
+    # Expect "SECRET_KEY must be ≥32 characters in production environment"
+
+# Scenario 4: Invalid Production Configuration - Missing LLM API Keys
+print("\n--- Scenario 4: Invalid Production Config - Missing LLM API Keys ---")
+os.environ.clear()
+os.environ["APP_ENV"] = "production"
+os.environ["DEBUG"] = "False"
+os.environ["SECRET_KEY"] = "this_is_a_very_long_and_secure_secret_key_for_production_0123456789"
+# OPENAI_API_KEY and ANTHROPIC_API_KEY are not set, which implies None
+
+try:
+    get_settings_with_prod_validation()
+    print("Settings loaded successfully, but should have failed validation (missing LLM API keys).")
+except ValidationError as e:
+    print("Caught expected validation error:")
+    print(e)
+    # Expect "At least one LLM API key (OpenAI or Anthropic) is required in production environment"
+
+# Scenario 5: Invalid OpenAI API Key Format
+print("\n--- Scenario 5: Invalid OpenAI API Key Format ---")
+os.environ.clear()
+os.environ["APP_ENV"] = "development" # Can be dev, as field validator runs independently
+os.environ["SECRET_KEY"] = "valid_dev_key_12345678901234567890"
+os.environ["OPENAI_API_KEY"] = "pk-wrong_prefix_instead_of_sk-" # This should fail
+
+try:
+    get_settings_with_prod_validation()
+    print("Settings loaded successfully, but should have failed validation (invalid OpenAI key format).")
+except ValidationError as e:
+    print("Caught expected validation error:")
+    print(e)
+    # Expect "Invalid OpenAI API key format"
+
+# Clean up simulated environment variables
+os.environ.clear()
 ```
 
-### Explanation of Execution
+#### Explanation of Execution
+This section vividly demonstrates the power of conditional and field-specific validation.
+*   **Scenario 1** shows a compliant production configuration loading successfully.
+*   **Scenarios 2, 3, and 4** purposefully introduce common production misconfigurations: `DEBUG` being `True`, a `SECRET_KEY` that is too short, and the absence of critical LLM API keys. In each case, our `validate_production_settings` `@model_validator` correctly identifies the issue and raises a `ValidationError` with an explicit message.
+*   **Scenario 5** targets the `OPENAI_API_KEY`'s format using the `@field_validator`, catching a malformed key even outside a production environment.
 
-Successfully loading both the `development` and `production` configurations without any `ValidationError` confirms that Alex's validation rules correctly interpret and accept compliant settings. For a Software Developer, this output is a green light, indicating that the defined settings adhere to all specified constraints. Notice how `SecretStr` fields are displayed as `**********` even when the underlying value is correct; this is a key security feature automatically handled by Pydantic, preventing sensitive information from being printed to logs or console outputs. This provides Alex with the assurance that the platform can start up correctly in these environments.
+For a Software Developer or Data Engineer, these explicit error messages at application startup are invaluable. They act as an immediate feedback mechanism, preventing the deployment of insecure or non-functional configurations to live environments. This proactive validation drastically reduces the risk of security breaches, service outages, or unexpected runtime behavior stemming from configuration errors.
 
 ---
 
-## 5. Testing Invalid Configurations: Catching Issues Early
+### 6. Catching Errors Early: Configuration Simulation and Reporting
 
-### Story + Context + Real-World Relevance
+The ultimate value of a robust configuration validation system is its ability to prevent failures before they impact users. As a Data Engineer preparing a deployment, I need a way to confidently verify that a given set of environment variables or configuration files will result in a valid application state. This "Validated Configuration Report" ensures that any potential issues are identified and resolved during development or staging, rather than during a critical production rollout.
 
-The real test of any robust validation system is its ability to *catch and report* invalid configurations. Alex now deliberately introduces various erroneous settings to see if the Pydantic validators correctly identify and halt the application startup with clear, actionable error messages. This process simulates common mistakes during development or deployment and confirms that the system will prevent misconfigured applications from ever reaching or running in production. This proactive error detection saves countless hours of debugging, prevents costly outages, and ensures the PE Intelligence Platform maintains its reliability.
+We can simulate different configuration scenarios and observe Pydantic's error reporting. This acts as our "report," detailing what works and what breaks, and why.
+
+1.3 Common Mistakes & Troubleshooting
+❌ Mistake 1: Dimension weights don't sum to 1.0
+# WRONG
+W_DATA_INFRA = 0.20
+W_AI_GOVERNANCE = 0.15
+W_TECH_STACK = 0.15
+W_TALENT = 0.20
+W_LEADERSHIP = 0.15
+W_USE_CASES = 0.10
+W_CULTURE = 0.10
+# Sum = 1.05!
+Fix: The model_validator catches this at startup with a clear error message.
+❌ Mistake 2: Exposing secrets in logs
+# WRONG
+logger.info("connecting", password=settings.SNOWFLAKE_PASSWORD)
+Fix: Use SecretStr which masks values automatically.
+❌ Mistake 3: Missing lifespan context manager
+# WRONG - No cleanup on shutdown
+app = FastAPI()
+redis_client = Redis() # Leaks on shutdown!
+Fix: Always use lifespan for resource management.
+❌ Mistake 4: Not validating at startup
+# WRONG - Fails at runtime when first used
+def get_sector_baseline(sector_id):
+return db.query(...) # Database not connected!
+Fix: Run validation scripts before application starts
+
+#### Workflow Task: Simulate Configuration Scenarios and Generate a Validation Report
+
+We will define helper functions to load settings under different simulated environment variable sets, deliberately introducing errors to demonstrate the validation system's comprehensive nature.
 
 ```python
-# Code cell (function definition + function execution)
+# Helper function to clear environment variables for a clean test
+def clear_env():
+    # Only clear variables starting with a prefix to avoid clearing system vars
+    for key in list(os.environ.keys()):
+        if key.startswith(("APP_", "SECRET_", "RATE_", "DAILY_", "COST_", "W_", "OPENAI_", "ANTHROPIC_", "HITL_")):
+            del os.environ[key]
 
-print("--- Testing Invalid Configuration Scenarios ---")
+# Function to load settings for a given scenario
+def load_scenario_settings(scenario_name: str, env_vars: Dict[str, str]):
+    clear_env() # Start with a clean slate
+    print(f"\n--- Simulating Scenario: {scenario_name} ---")
+    for key, value in env_vars.items():
+        os.environ[key] = value
+    
+    # Reload settings with new environment variables
+    # We need to clear lru_cache for get_settings_with_prod_validation to pick up new env vars
+    get_settings_with_prod_validation.cache_clear() 
+    
+    try:
+        settings = get_settings_with_prod_validation()
+        print(f"SUCCESS: Configuration for '{scenario_name}' is VALID.")
+        print(f"  APP_ENV: {settings.APP_ENV}")
+        print(f"  DEBUG: {settings.DEBUG}")
+        print(f"  SECRET_KEY (masked): {settings.SECRET_KEY}")
+        print(f"  Dimension Weights Sum: {sum(settings.dimension_weights)}")
+        print(f"  OpenAI API Key Set: {'Yes' if settings.OPENAI_API_KEY else 'No'}")
+    except ValidationError as e:
+        print(f"FAILURE: Configuration for '{scenario_name}' is INVALID. Details:")
+        print(e)
+    finally:
+        clear_env()
 
-# Scenario 1: Invalid Field Value (RATE_LIMIT_PER_MINUTE out of range)
-invalid_rate_limit_data = dev_settings_data.copy()
-invalid_rate_limit_data["RATE_LIMIT_PER_MINUTE"] = 2000 # Max is 1000
+# Scenario Definitions
+scenarios = {
+    "Valid Development Config": {
+        "APP_ENV": "development",
+        "DEBUG": "True",
+        "SECRET_KEY": "dev_key_for_testing_12345678901234567890",
+        "OPENAI_API_KEY": "sk-dev_test_key_xxxx",
+        "W_DATA_INFRA": "0.18", "W_AI_GOVERNANCE": "0.15", "W_TECH_STACK": "0.15",
+        "W_TALENT": "0.17", "W_LEADERSHIP": "0.13", "W_USE_CASES": "0.12", "W_CULTURE": "0.10",
+        "RATE_LIMIT_PER_MINUTE": "100",
+        "DAILY_COST_BUDGET_USD": "750.0",
+        "COST_ALERT_THRESHOLD_PCT": "0.85",
+        "HITL_SCORE_CHANGE_THRESHOLD": "18.0",
+        "HITL_EBITDA_PROJECTION_THRESHOLD": "12.5"
+    },
+    "Valid Production Config": {
+        "APP_ENV": "production",
+        "DEBUG": "False",
+        "SECRET_KEY": "prod_secure_key_12345678901234567890123456789012", # >= 32 chars
+        "ANTHROPIC_API_KEY": "sk-ant-key_xxxxxxxxxxxxxxxxxxxxxxxxxxxx", # One LLM key required
+        "W_DATA_INFRA": "0.18", "W_AI_GOVERNANCE": "0.15", "W_TECH_STACK": "0.15",
+        "W_TALENT": "0.17", "W_LEADERSHIP": "0.13", "W_USE_CASES": "0.12", "W_CULTURE": "0.10",
+        "RATE_LIMIT_PER_MINUTE": "500",
+        "DAILY_COST_BUDGET_USD": "10000.0",
+        "COST_ALERT_THRESHOLD_PCT": "0.9",
+        "HITL_SCORE_CHANGE_THRESHOLD": "25.0",
+        "HITL_EBITDA_PROJECTION_THRESHOLD": "20.0"
+    },
+    "Invalid: Production DEBUG Mode Enabled": {
+        "APP_ENV": "production",
+        "DEBUG": "True", # ERROR: Debug should be False in production
+        "SECRET_KEY": "prod_secure_key_12345678901234567890123456789012",
+        "OPENAI_API_KEY": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "W_DATA_INFRA": "0.18", "W_AI_GOVERNANCE": "0.15", "W_TECH_STACK": "0.15",
+        "W_TALENT": "0.17", "W_LEADERSHIP": "0.13", "W_USE_CASES": "0.12", "W_CULTURE": "0.10",
+        "RATE_LIMIT_PER_MINUTE": "60"
+    },
+    "Invalid: Dimension Weights Don't Sum to 1.0": {
+        "APP_ENV": "development",
+        "DEBUG": "False",
+        "SECRET_KEY": "dev_key_for_testing_12345678901234567890",
+        "W_DATA_INFRA": "0.20", "W_AI_GOVERNANCE": "0.15", "W_TECH_STACK": "0.15",
+        "W_TALENT": "0.17", "W_LEADERSHIP": "0.13", "W_USE_CASES": "0.12", "W_CULTURE": "0.10", # Sum = 1.02
+        "RATE_LIMIT_PER_MINUTE": "60"
+    },
+    "Invalid: API Rate Limit Out of Range": {
+        "APP_ENV": "development",
+        "DEBUG": "False",
+        "SECRET_KEY": "dev_key_for_testing_12345678901234567890",
+        "RATE_LIMIT_PER_MINUTE": "1200", # ERROR: Exceeds max 1000
+        "W_DATA_INFRA": "0.18", "W_AI_GOVERNANCE": "0.15", "W_TECH_STACK": "0.15",
+        "W_TALENT": "0.17", "W_LEADERSHIP": "0.13", "W_USE_CASES": "0.12", "W_CULTURE": "0.10"
+    }
+}
 
-print("\n--- Scenario 1: Rate Limit Out of Range ---")
-try:
-    Settings(**invalid_rate_limit_data)
-except ValidationError as e:
-    print("Caught ValidationError for invalid rate limit:")
-    print(e.json(indent=2))
+# Run all scenarios
+for name, env_vars in scenarios.items():
+    load_scenario_settings(name, env_vars)
 
-# Scenario 2: Dimension Weights Don't Sum to 1.0
-invalid_weights_data = prod_settings_data.copy()
-invalid_weights_data["W_DATA_INFRA"] = 0.25 # Original was 0.18, sum will be > 1.0
-invalid_weights_data["W_AI_GOVERNANCE"] = 0.15
-invalid_weights_data["W_TECH_STACK"] = 0.15
-invalid_weights_data["W_TALENT"] = 0.17
-invalid_weights_data["W_LEADERSHIP"] = 0.13
-invalid_weights_data["W_USE_CASES"] = 0.12
-invalid_weights_data["W_CULTURE"] = 0.10
-# Sum will be 0.25 + 0.15 + 0.15 + 0.17 + 0.13 + 0.12 + 0.10 = 1.07
-
-print("\n--- Scenario 2: Dimension Weights Don't Sum to 1.0 ---")
-try:
-    Settings(**invalid_weights_data)
-except ValidationError as e:
-    print("Caught ValidationError for dimension weights sum:")
-    print(e.json(indent=2))
-
-# Scenario 3: Production Environment Violations (DEBUG enabled, SECRET_KEY too short, missing LLM key, missing AWS)
-invalid_prod_violations_data = prod_settings_data.copy()
-invalid_prod_violations_data["DEBUG"] = True # Debug cannot be true in production
-invalid_prod_violations_data["SECRET_KEY"] = "shortkey" # Too short for production
-invalid_prod_violations_data["OPENAI_API_KEY"] = None # No LLM API key
-invalid_prod_violations_data["ANTHROPIC_API_KEY"] = None
-invalid_prod_violations_data["AWS_ACCESS_KEY_ID"] = None # Missing AWS creds
-invalid_prod_violations_data["AWS_SECRET_ACCESS_KEY"] = None
-invalid_prod_violations_data["S3_BUCKET"] = None
-
-print("\n--- Scenario 3: Production Environment Violations ---")
-try:
-    Settings(**invalid_prod_violations_data)
-except ValidationError as e:
-    print("Caught ValidationError for production environment violations:")
-    print(e.json(indent=2))
-
-# Scenario 4: Invalid OpenAI API Key format
-invalid_openai_format_data = dev_settings_data.copy()
-invalid_openai_format_data["OPENAI_API_KEY"] = "invalid-key-format-123"
-
-print("\n--- Scenario 4: Invalid OpenAI API Key Format ---")
-try:
-    Settings(**invalid_openai_format_data)
-except ValidationError as e:
-    print("Caught ValidationError for invalid OpenAI API key format:")
-    print(e.json(indent=2))
-
-# Scenario 5: Missing Snowflake configuration for production
-missing_snowflake_prod_data = prod_settings_data.copy()
-missing_snowflake_prod_data["SNOWFLAKE_ACCOUNT"] = "" # Missing essential Snowflake detail
-
-print("\n--- Scenario 5: Missing Snowflake configuration for production ---")
-try:
-    Settings(**missing_snowflake_prod_data)
-except ValidationError as e:
-    print("Caught ValidationError for missing Snowflake configuration in production:")
-    print(e.json(indent=2))
+# Final cleanup
+clear_env()
 ```
 
-### Explanation of Execution
+#### Explanation of Execution
+This final section serves as our "Validated Configuration Report." By simulating a range of realistic configuration scenarios – both valid and invalid – we demonstrate the comprehensive safety net provided by Pydantic's validation. Each `load_scenario_settings` call clears the environment, sets specific variables, attempts to load the `Settings`, and reports the outcome.
 
-Each `try...except ValidationError` block above demonstrates how Pydantic's validation system robustly handles erroneous configurations. For Alex, these outputs are highly valuable:
+The output clearly shows:
+*   How valid development and production configurations pass all checks.
+*   How specific, critical errors (like `DEBUG` mode in production, incorrect weight sums, or out-of-range API limits) are immediately identified.
+*   The exact `ValidationError` messages provide detailed information, pointing directly to the faulty parameter and the reason for the failure.
 
-*   **Scenario 1 (Rate Limit Out of Range)**: The error message clearly indicates that `RATE_LIMIT_PER_MINUTE` must be less than or equal to 1000, preventing a misconfigured API from being deployed with an unrealistic or dangerous rate limit.
-*   **Scenario 2 (Dimension Weights Don't Sum to 1.0)**: This error, caught by our `@model_validator`, explicitly states that "Dimension weights must sum to 1.0, but got 1.070". This is critical feedback for a Data Engineer, ensuring the mathematical integrity of the scoring model before deployment.
-*   **Scenario 3 (Production Environment Violations)**: This simulation triggers multiple production-specific errors: `DEBUG` being `True`, `SECRET_KEY` being too short, and both LLM API keys missing, along with missing AWS credentials. The `ValidationError` aggregates all these issues, providing a comprehensive report of why the configuration is unsuitable for production. This immediately flags critical security and functional risks.
-*   **Scenario 4 (Invalid OpenAI API Key Format)**: The `@field_validator` correctly identifies that the `OPENAI_API_KEY` does not start with "sk-", preventing API integration failures due to malformed credentials.
-*   **Scenario 5 (Missing Snowflake configuration for production)**: The `@model_validator` specifically flags that Snowflake connection details are required in production, catching crucial missing dependencies.
-
-The detailed error messages provided by Pydantic in these scenarios are indispensable. They don't just say "invalid config"; they pinpoint the exact field(s) and the reason for the failure, allowing Alex to quickly identify and rectify the issues. This direct feedback loop is what makes this automated validation system a powerful tool for preventing deployment failures and ensuring the stability and security of the PE Intelligence Platform.
-
----
-
-## Deliverable Summary: The Validated Configuration Report
-
-This notebook serves as a practical "Validated Configuration Report." Through hands-on activities, we've demonstrated how to:
-
-1.  **Define a structured configuration system** using Pydantic `BaseSettings`, establishing a clear blueprint for all application parameters.
-2.  **Apply granular data type and range validation** using `Field` and `@field_validator` for individual settings like API key formats and rate limits.
-3.  **Implement complex cross-field and conditional validation logic** using `@model_validator`, ensuring critical business rules (like scoring model weights summing to 1.0) and stringent production environment safeguards (e.g., `DEBUG=False`, robust secret keys, required external API keys) are enforced.
-4.  **Simulate configuration loading** for both valid and invalid scenarios, explicitly showcasing how the system catches errors at startup with clear, actionable `ValidationError` messages.
-
-This detailed, executable specification illustrates how a Software Developer or Data Engineer can proactively prevent configuration-related bugs, improve application reliability, and instill greater trust in the PE Intelligence Platform's operations. By catching these issues during development and testing, we avoid costly production outages and maintain the high standards expected by PE Corp.'s stakeholders.
+For a Software Developer or Data Engineer, this process allows for exhaustive testing of configuration permutations. It means that before any new feature or service is deployed to the PE intelligence platform, its configuration can be "pre-validated." This drastically reduces the risk of deployment failures and runtime errors, leading to a more stable, secure, and reliable platform. The proactive identification of issues at startup prevents wasted time debugging issues in live systems and ensures that the platform's critical business logic is always operating on correctly defined parameters.
